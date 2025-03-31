@@ -1,0 +1,6 @@
+
+export PYTHONPATH=$PYTHONPATH:/private/yjy/project/MoVEAR
+
+
+torchrun --nproc_per_node=4 --nnodes=1 --node_rank=0 --master_addr="localhost" --master_port=29500 train.py \
+  --depth=36 --saln=1 --pn=512 --bs=384 --ep=350 --tblr=4e-5 --fp16=1 --alng=5e-6 --wpe=0.01 --twde=0.08 --data_path="/private/yjy/project/MoVEAR/datasets/imagenet"
