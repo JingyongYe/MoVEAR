@@ -19,7 +19,7 @@ except ImportError as e:
     time.sleep(5)
     raise e
 
-import movear.models.dist as dist
+import dist
 
 
 class Args(Tap):
@@ -36,13 +36,6 @@ class Args(Tap):
     hd: float = 0.02    # head.w *= hd
     aln: float = 0.5    # the multiplier of ada_lin.w's initialization
     alng: float = 1e-5  # the multiplier of ada_lin.w[gamma channels]'s initialization
-    
-    # MoE parameters
-    num_experts: int = 8       # Number of experts in MoE layers
-    k: int = 2                 # Top-k experts to route to
-    noise_std: float = 0.1     # Noise standard deviation for routing
-    aux_weight: float = 0.01   # Weight for auxiliary load balancing loss
-    
     # VAR optimization
     fp16: int = 0           # 1: using fp16, 2: bf16
     tblr: float = 1e-4      # base lr
@@ -86,6 +79,13 @@ class Args(Tap):
     pg: float = 0.0         # >0 for use progressive training during [0%, this] of training
     pg0: int = 4            # progressive initial stage, 0: from the 1st token map, 1: from the 2nd token map, etc
     pgwp: float = 0         # num of warmup epochs at each progressive stage
+    
+    # MoE parameters
+    num_experts: int = 8       # Number of experts in MoE layers
+    k: int = 2                 # Top-k experts to route each token to
+    noise_std: float = 0.1     # Noise std for load balancing
+    aux_weight: float = 0.01   # Weight for auxiliary balancing loss
+    pretrained_var: str = ''   # Path to pretrained VAR model for initialization
     
     # would be automatically set in runtime
     cmd: str = ' '.join(sys.argv[1:])  # [automatically set; don't specify this]
@@ -196,6 +196,7 @@ class Args(Tap):
             'L_mean': self.L_mean, 'L_tail': self.L_tail, 'acc_mean': self.acc_mean, 'acc_tail': self.acc_tail,
             'vL_mean': self.vL_mean, 'vL_tail': self.vL_tail, 'vacc_mean': self.vacc_mean, 'vacc_tail': self.vacc_tail,
             'remain_time': self.remain_time, 'finish_time': self.finish_time,
+            # MoE specific log can be added here if needed
         }.items():
             if hasattr(v, 'item'): v = v.item()
             log_dict[k] = v
@@ -211,12 +212,23 @@ class Args(Tap):
         return f'{{\n{s}\n}}\n'
 
 
-def init_dist_and_get_args():
+def get_parser():
+    """Return the argument parser for external customization"""
+    return Args(explicit_bool=True)
+
+
+def init_dist_and_get_args(parser=None):
     for i in range(len(sys.argv)):
         if sys.argv[i].startswith('--local-rank=') or sys.argv[i].startswith('--local_rank='):
             del sys.argv[i]
             break
-    args = Args(explicit_bool=True).parse_args(known_only=True)
+    
+    # Use provided parser or create a new one
+    if parser is None:
+        args = Args(explicit_bool=True).parse_args(known_only=True)
+    else:
+        args = parser.parse_args(known_only=True)
+    
     if args.local_debug:
         args.pn = '1_2_3'
         args.seed = 1
@@ -238,7 +250,7 @@ def init_dist_and_get_args():
         print(f'======================================================================================\n\n')
     
     # init torch distributed
-    from utils import misc
+    from movear.utils import misc
     os.makedirs(args.local_out_dir_path, exist_ok=True)
     misc.init_distributed_mode(local_out_path=args.local_out_dir_path, timeout=30)
     
@@ -280,11 +292,15 @@ def init_dist_and_get_args():
     args.log_txt_path = os.path.join(args.local_out_dir_path, 'log.txt')
     args.last_ckpt_path = os.path.join(args.local_out_dir_path, f'ar-ckpt-last.pth')
     _reg_valid_name = re.compile(r'[^\w\-+,.]')
+    
+    # Include MoE info in the tensorboard log name
     tb_name = _reg_valid_name.sub(
         '_',
-        f'tb-VARd{args.depth}'
+        f'tb-MoEVARd{args.depth}'
+        f'_e{args.num_experts}k{args.k}'
         f'__pn{args.pn}'
         f'__b{args.bs}ep{args.ep}{args.opt[:4]}lr{args.tblr:g}wd{args.twd:g}'
+        f'_aux{args.aux_weight:g}'
     )
     args.tb_log_dir_path = os.path.join(args.local_out_dir_path, tb_name)
     

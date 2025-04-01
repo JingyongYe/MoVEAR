@@ -13,7 +13,7 @@ import pytz
 import torch
 import torch.distributed as tdist
 
-import movear.models.dist
+import movear.models.dist as dist
 from movear.utils import arg_util
 
 os_system = functools.partial(subprocess.call, shell=True)

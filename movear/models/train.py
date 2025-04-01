@@ -9,11 +9,11 @@ from functools import partial
 import torch
 from torch.utils.data import DataLoader
 
-import movear.models.dist as dist
-from movear.utils import arg_util, misc
-from movear.utils.data import build_dataset
-from movear.utils.data_sampler import DistInfiniteBatchSampler, EvalDistributedSampler
-from movear.utils.misc import auto_resume
+import dist
+from utils import arg_util, misc
+from utils.data import build_dataset
+from utils.data_sampler import DistInfiniteBatchSampler, EvalDistributedSampler
+from utils.misc import auto_resume
 
 
 def build_everything(args: arg_util.Args):
@@ -254,7 +254,6 @@ def train_one_ep(ep: int, is_first_ep: bool, start_it: int, args: arg_util.Args,
     # import heavy packages after Dataloader object creation
     from trainer import VARTrainer
     from utils.lr_control import lr_wd_annealing
-    from tqdm import tqdm  # Add this import for progress bar
     trainer: VARTrainer
     
     step_cnt = 0
@@ -270,24 +269,10 @@ def train_one_ep(ep: int, is_first_ep: bool, start_it: int, args: arg_util.Args,
         warnings.filterwarnings('ignore', category=UserWarning)
     g_it, max_it = ep * iters_train, args.ep * iters_train
     
-    # Create a wrapper function to get batches with progress bar
-    def get_batches_with_progress():
-        # Get batches using existing log_every method
-        for it, (inp, label) in me.log_every(start_it, iters_train, ld_or_itrt, 30 if iters_train > 8000 else 5, header):
-            if it < start_it:
-                continue
-            yield it, inp, label
-    
-    # Create progress bar
-    pbar = tqdm(total=iters_train-start_it, desc=f"Epoch {ep}/{args.ep}", 
-                bar_format='{l_bar}{bar:30}{r_bar}',
-                dynamic_ncols=True, leave=True)
-    
-    # Iterate with progress bar
-    for it, inp, label in get_batches_with_progress():
+    for it, (inp, label) in me.log_every(start_it, iters_train, ld_or_itrt, 30 if iters_train > 8000 else 5, header):
         g_it = ep * iters_train + it
-        if is_first_ep and it == start_it: 
-            warnings.resetwarnings()
+        if it < start_it: continue
+        if is_first_ep and it == start_it: warnings.resetwarnings()
         
         inp = inp.to(args.device, non_blocking=True)
         label = label.to(args.device, non_blocking=True)
@@ -298,12 +283,12 @@ def train_one_ep(ep: int, is_first_ep: bool, start_it: int, args: arg_util.Args,
         min_tlr, max_tlr, min_twd, max_twd = lr_wd_annealing(args.sche, trainer.var_opt.optimizer, args.tlr, args.twd, args.twde, g_it, wp_it, max_it, wp0=args.wp0, wpe=args.wpe)
         args.cur_lr, args.cur_wd = max_tlr, max_twd
         
-        if args.pg:  # default: args.pg == 0.0, means no progressive training, won't get into this
+        if args.pg: # default: args.pg == 0.0, means no progressive training, won't get into this
             if g_it <= wp_it: prog_si = args.pg0
             elif g_it >= max_it*args.pg: prog_si = len(args.patch_nums) - 1
             else:
                 delta = len(args.patch_nums) - 1 - args.pg0
-                progress = min(max((g_it - wp_it) / (max_it*args.pg - wp_it), 0), 1)  # from 0 to 1
+                progress = min(max((g_it - wp_it) / (max_it*args.pg - wp_it), 0), 1) # from 0 to 1
                 prog_si = args.pg0 + round(progress * delta)    # from args.pg0 to len(args.patch_nums)-1
         else:
             prog_si = -1
@@ -327,17 +312,7 @@ def train_one_ep(ep: int, is_first_ep: bool, start_it: int, args: arg_util.Args,
         if args.tclip > 0:
             tb_lg.update(head='AR_opt_grad/grad', grad_norm=grad_norm)
             tb_lg.update(head='AR_opt_grad/grad', grad_clip=args.tclip)
-        
-        # Update progress bar with current metrics
-        pbar_desc = f"Epoch {ep}/{args.ep} | Loss: {me.meters['Lm'].median:.4f} | Acc: {me.meters['Accm'].median:.2f}%"
-        if 'Lt' in me.meters and me.meters['Lt'].count > 0:
-            pbar_desc += f" | Loss-T: {me.meters['Lt'].median:.4f}"
-        if 'Acct' in me.meters and me.meters['Acct'].count > 0:
-            pbar_desc += f" | Acc-T: {me.meters['Acct'].median:.2f}%"
-        pbar.set_description(pbar_desc)
-        pbar.update(1)
     
-    pbar.close()
     me.synchronize_between_processes()
     return {k: meter.global_avg for k, meter in me.meters.items()}, me.iter_time.time_preds(max_it - (g_it + 1) + (args.ep - ep) * 15)  # +15: other cost
 

@@ -1,48 +1,31 @@
 import torch
+import torch.distributed as dist
 from movear.models.moevar import MoEVAR
 from movear.models.vqvae import VQVAE
 
 def build_vae_moe_var(
+    # Keep the same parameter order and defaults as build_vae_var
+    device, patch_nums=(1, 2, 3, 4, 5, 6, 8, 10, 13, 16),
     V=4096, Cvae=32, ch=160, share_quant_resi=4,
-    device=None, patch_nums=(1, 2, 3, 4, 5, 6, 8, 10, 13, 16),
-    num_classes=1000, depth=16, shared_aln=False, attn_l2_norm=False,
+    num_classes=1000, depth=16, shared_aln=False, attn_l2_norm=True,
     flash_if_available=True, fused_if_available=True,
-    init_adaln=0.5, init_adaln_gamma=1e-5, init_head=0.02, init_std=0.02,
-    num_experts=8, k=2, noise_std=0.1, aux_loss_weight=0.01
+    init_adaln=0.5, init_adaln_gamma=1e-5, init_head=0.02, init_std=-1,
+    num_experts=4, k=2, noise_std=0.1, aux_loss_weight=0.01
 ):
-    """Build VAE and MoE-VAR models
+    """Build VAE and MoE-VAR models with expert parallelism"""
+    world_size = dist.get_world_size()
     
-    Args:
-        V (int): Vocabulary size for VQVAE
-        Cvae (int): Channel dimension for VQVAE
-        ch (int): Channel multiplier for VQVAE
-        share_quant_resi (int): Share quantization residual parameter
-        device: Device to place models on
-        patch_nums (tuple): Patch numbers for different scales
-        num_classes (int): Number of classes for class conditioning
-        depth (int): Depth of the transformer model
-        shared_aln (bool): Whether to use shared AdaLN
-        attn_l2_norm (bool): Whether to use L2 norm for attention
-        flash_if_available (bool): Whether to use flash attention if available
-        fused_if_available (bool): Whether to use fused operations if available
-        init_adaln (float): Initialization value for AdaLN
-        init_adaln_gamma (float): Initialization gamma for AdaLN
-        init_head (float): Initialization scale for output head
-        init_std (float): Standard deviation for weight initialization
-        num_experts (int): Number of experts in MoE
-        k (int): Number of experts to select
-        noise_std (float): Standard deviation for router noise
-        aux_loss_weight (float): Weight for auxiliary loss
-        
-    Returns:
-        tuple: (vae_local, var_wo_ddp) - The VQVAE and MoEVAR models
-    """
-    print(f"[MoE] Building VAR with {num_experts} experts, top-{k}, noise={noise_std}, aux_weight={aux_loss_weight}")
+    # Validate expert configuration for expert parallelism
+    if num_experts % world_size != 0:
+        print(f"Warning: {num_experts} experts is not divisible by {world_size} GPUs. Adjusting to {num_experts + (world_size - num_experts % world_size)} experts")
+        num_experts = num_experts + (world_size - num_experts % world_size)
+    
+    print(f"[MoE] Building VAR with {num_experts} experts (distributed across {world_size} GPUs), top-{k}, noise={noise_std}, aux_weight={aux_loss_weight}")
     
     # Build VQVAE (same as original build_vae_var function)
     vae_local = VQVAE(
-        ch=ch, levels=4, Cvae=Cvae, vocab_size=V, share_quant_resi=share_quant_resi,
-        using_znorm=True, default_qresi_counts=0, v_patch_nums=patch_nums
+        vocab_size=V, z_channels=Cvae, ch=ch, test_mode=True, 
+        share_quant_resi=share_quant_resi, v_patch_nums=patch_nums
     )
     
     # Build MoE-VAR
