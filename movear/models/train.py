@@ -9,11 +9,11 @@ from functools import partial
 import torch
 from torch.utils.data import DataLoader
 
-import movear.dist as dist
-from utils import arg_util, misc
-from utils.data import build_dataset
-from utils.data_sampler import DistInfiniteBatchSampler, EvalDistributedSampler
-from utils.misc import auto_resume
+import movear.models.dist as dist
+from movear.utils import arg_util, misc
+from movear.utils.data import build_dataset
+from movear.utils.data_sampler import DistInfiniteBatchSampler, EvalDistributedSampler
+from movear.utils.misc import auto_resume
 
 
 def build_everything(args: arg_util.Args):

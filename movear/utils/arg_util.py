@@ -19,7 +19,7 @@ except ImportError as e:
     time.sleep(5)
     raise e
 
-import dist
+import movear.models.dist as dist
 
 
 class Args(Tap):
@@ -36,6 +36,13 @@ class Args(Tap):
     hd: float = 0.02    # head.w *= hd
     aln: float = 0.5    # the multiplier of ada_lin.w's initialization
     alng: float = 1e-5  # the multiplier of ada_lin.w[gamma channels]'s initialization
+    
+    # MoE parameters
+    num_experts: int = 8       # Number of experts in MoE layers
+    k: int = 2                 # Top-k experts to route to
+    noise_std: float = 0.1     # Noise standard deviation for routing
+    aux_weight: float = 0.01   # Weight for auxiliary load balancing loss
+    
     # VAR optimization
     fp16: int = 0           # 1: using fp16, 2: bf16
     tblr: float = 1e-4      # base lr
