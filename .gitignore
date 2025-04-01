@@ -20,3 +20,4 @@ local_output*
 *.ipynb
 /var/local_output/
 /datasets/
+*/local_output/

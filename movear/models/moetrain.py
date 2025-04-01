@@ -22,6 +22,7 @@ from movear.models.moevar import MoEVAR
 from movear.models.moebuild import build_vae_moe_var, load_pretrained_for_moe
 import movear.models.dist as dist
 from movear.models.moetrainer import MoEVARTrainer
+from tqdm import tqdm
 
 
 def build_everything(args: arg_util.Args):
@@ -227,6 +228,18 @@ def train_one_ep(ep: int, is_first_ep: bool, start_it: int, args: arg_util.Args,
     
     g_it, max_it = ep * iters_train, args.ep * iters_train
     
+    # 创建主进程的进度条
+    pbar = None
+    if dist.is_master():
+        pbar = tqdm(
+            total=iters_train-start_it, 
+            desc=f"Epoch {ep}/{args.ep}", 
+            position=0, 
+            leave=True,
+            ncols=100
+        )
+    
+    # 修改训练循环以更新进度条
     for it, (inp, label) in me.log_every(start_it, iters_train, ld_or_itrt, 30 if iters_train > 8000 else 5, header):
         g_it = ep * iters_train + it
         if it < start_it: continue
@@ -286,6 +299,22 @@ def train_one_ep(ep: int, is_first_ep: bool, start_it: int, args: arg_util.Args,
             moe_loss = me.meters['MoELoss'].global_avg
             tb_lg.update(head='MoE/aux_loss', aux_loss=moe_loss, step=g_it)
             tb_lg.update(head='MoE/aux_weight', aux_weight=args.aux_weight, step=g_it)
+        
+        # 更新进度条
+        if dist.is_master() and pbar is not None:
+            pbar.update(1)
+            # 显示关键指标
+            moe_loss = me.meters.get('MoELoss', misc.SmoothedValue()).median if 'MoELoss' in me.meters else 0.0
+            pbar.set_postfix({
+                'loss': f"{me.meters['Lm'].median:.4f}",
+                'acc': f"{me.meters['Accm'].median:.1f}%",
+                'lr': f"{max_tlr:.6f}",
+                'MoE': f"{moe_loss:.5f}"
+            })
+    
+    # 关闭进度条
+    if dist.is_master() and pbar is not None:
+        pbar.close()
     
     me.synchronize_between_processes()
     return {k: meter.global_avg for k, meter in me.meters.items()}, me.iter_time.time_preds(max_it - (g_it + 1) + (args.ep - ep) * 15)

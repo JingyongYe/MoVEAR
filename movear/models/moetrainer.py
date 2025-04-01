@@ -148,6 +148,12 @@ class MoEVARTrainer(object):
         # Backward and optimization
         grad_norm, scale_log2 = self.var_opt.backward_clip_step(loss=total_loss, stepping=stepping)
         
+        # 处理None梯度的情况
+        if grad_norm is None:
+            if stepping and dist.get_rank() == 0:
+                print(f"[MoE Warning] Gradient is None at step {g_it}. This may occur in first iterations or if no experts were selected on this GPU.")
+            grad_norm = torch.tensor(0.0, device=inp_B3HW.device)
+        
         # Logging
         pred_BL = logits_BLV.data.argmax(dim=-1)
         if it == 0 or it in metric_lg.log_iters:
@@ -160,11 +166,12 @@ class MoEVARTrainer(object):
                 Ltail = self.val_loss(logits_BLV.data[:, -self.last_l:].reshape(-1, V), gt_BL[:, -self.last_l:].reshape(-1)).item()
                 acc_tail = (pred_BL[:, -self.last_l:] == gt_BL[:, -self.last_l:]).float().mean().item() * 100
             
-            grad_norm = grad_norm.item()
+            # 安全获取梯度范数
+            grad_norm_value = grad_norm.item() if hasattr(grad_norm, 'item') else float(grad_norm)
             
             # Log MoE auxiliary loss in addition to regular metrics
             moe_loss_value = aux_loss.item() if aux_loss is not None else 0.0
-            metric_lg.update(Lm=Lmean, Lt=Ltail, Accm=acc_mean, Acct=acc_tail, tnm=grad_norm, MoELoss=moe_loss_value)
+            metric_lg.update(Lm=Lmean, Lt=Ltail, Accm=acc_mean, Acct=acc_tail, tnm=grad_norm_value, MoELoss=moe_loss_value)
         
         # Log to tensorboard - similar to VARTrainer but with MoE specific metrics
         if g_it == 0 or (g_it + 1) % 500 == 0:

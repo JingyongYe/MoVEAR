@@ -69,6 +69,12 @@ class MoEAdaLNSelfAttn(nn.Module):
         # 只处理属于当前GPU的序列部分
         local_x = x[:, local_start:local_end, :]
         
+        # 为本地分片创建对应的注意力掩码
+        local_attn_bias = None
+        if attn_bias is not None:
+            # 切片注意力掩码以匹配本地序列大小
+            local_attn_bias = attn_bias[:, :, local_start:local_end, local_start:local_end]
+        
         # 注意力计算（只对本地序列）
         if self.shared_aln:
             cond_reshaped = self.shared_ada_lin_ref(cond_BD).view(-1, 1, 6, self.C)
@@ -79,7 +85,7 @@ class MoEAdaLNSelfAttn(nn.Module):
         
         # 计算仅限于本地序列
         local_norm_x = self.ln_wo_grad(local_x).mul(scale1.add(1)).add_(shift1)
-        local_attn_out = self.attn(local_norm_x, attn_bias=attn_bias)
+        local_attn_out = self.attn(local_norm_x, attn_bias=local_attn_bias)  # 使用本地注意力掩码
         local_x = local_x + self.drop_path(local_attn_out.mul_(gamma1))
         
         # MoE FFN计算
@@ -88,8 +94,7 @@ class MoEAdaLNSelfAttn(nn.Module):
         local_x = local_x + self.drop_path(local_moe_out.mul(gamma2))
         
         # 将各GPU的处理结果合并
-        all_x = [torch.zeros_like(local_x) for _ in range(world_size)]
-        dist.all_gather(all_x, local_x)
+        all_x = dist.allgather(local_x, cat=False)
         
         # 重构完整序列
         output = torch.cat(all_x, dim=1)
