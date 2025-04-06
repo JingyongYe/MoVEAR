@@ -23,6 +23,8 @@ from movear.models.moebuild import build_vae_moe_var, load_pretrained_for_moe
 import movear.models.dist as dist
 from movear.models.moetrainer import MoEVARTrainer
 from tqdm import tqdm
+import signal
+
 
 
 def build_everything(args: arg_util.Args):
@@ -53,17 +55,21 @@ def build_everything(args: arg_util.Args):
             args.data_path, final_reso=args.data_load_reso, hflip=args.hflip, mid_reso=args.mid_reso,
         )
         types = str((type(dataset_train).__name__, type(dataset_val).__name__))
-        
+        val_batch_size = max(4, round(args.batch_size // 4))
         ld_val = DataLoader(
             dataset_val, num_workers=0, pin_memory=True,
-            batch_size=round(args.batch_size*1.5), 
+            batch_size=val_batch_size, 
             sampler=EvalDistributedSampler(dataset_val, num_replicas=dist.get_world_size(), rank=dist.get_rank()),
             shuffle=False, drop_last=False,
         )
         del dataset_val
         
         ld_train = DataLoader(
-            dataset=dataset_train, num_workers=args.workers, pin_memory=True,
+            dataset=dataset_train, 
+            num_workers=8,  # 增加至少8个工作线程
+            pin_memory=True,
+            persistent_workers=True,  # 保持worker进程活跃
+            prefetch_factor=2,  # 预加载批次数
             generator=args.get_different_generator_for_each_rank(),
             batch_sampler=DistInfiniteBatchSampler(
                 dataset_len=len(dataset_train), glb_batch_size=args.glb_batch_size, 
@@ -126,7 +132,8 @@ def build_everything(args: arg_util.Args):
     
     var: DDP = (DDP if dist.initialized() else NullDDP)(
         var_wo_ddp, device_ids=[dist.get_local_rank()], 
-        find_unused_parameters=False, broadcast_buffers=False
+        find_unused_parameters=True,  # 将False改为True
+        broadcast_buffers=False
     )
     
     # Print model information
@@ -326,12 +333,17 @@ def main_training():
     if args.local_debug:
         torch.autograd.set_detect_anomaly(True)
     
+    os.makedirs(args.local_out_dir_path, exist_ok=True)
+    print(f"[DEBUG] Output directory: {args.local_out_dir_path}")
+    
     # Build everything needed for training
     (
         tb_lg, trainer,
         start_ep, start_it,
         iters_train, ld_train, ld_val
     ) = build_everything(args)
+    
+  
     
     # Training loop
     start_time = time.time()
@@ -374,7 +386,7 @@ def main_training():
         )
         
         # Validation and checkpoint saving
-        is_val_and_also_saving = (ep + 1) % 10 == 0 or (ep + 1) == args.ep
+        is_val_and_also_saving = (ep + 1) % 5 == 0 or (ep + 1) == args.ep
         if is_val_and_also_saving:
             val_loss_mean, val_loss_tail, val_acc_mean, val_acc_tail, tot, cost = trainer.evaluate(ld_val)
             
@@ -404,12 +416,20 @@ def main_training():
                 local_out_ckpt_best = os.path.join(args.local_out_dir_path, 'ar-ckpt-best.pth')
                 
                 print(f'[saving ckpt] ...', end='', flush=True)
-                torch.save({
-                    'epoch': ep+1,
-                    'iter': 0,
-                    'trainer': trainer.state_dict(),
-                    'args': args.state_dict(),
-                }, local_out_ckpt)
+                try:
+                    tmp_ckpt = local_out_ckpt + '.tmp'
+                    torch.save({
+                        'epoch': ep+1,
+                        'iter': 0,
+                        'trainer': trainer.state_dict(),
+                        'args': args.state_dict(),
+                    }, tmp_ckpt)
+                    if os.path.exists(local_out_ckpt):
+                        os.rename(local_out_ckpt, local_out_ckpt + '.bak')
+                    os.rename(tmp_ckpt, local_out_ckpt)
+                    print(f"     [saving ckpt](*) finished! @ {local_out_ckpt}", flush=True)
+                except Exception as e:
+                    print(f"     [saving ckpt] ERROR: {str(e)}", flush=True)
                 
                 if best_updated:
                     shutil.copy(local_out_ckpt, local_out_ckpt_best)

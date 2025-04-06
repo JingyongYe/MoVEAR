@@ -68,22 +68,32 @@ class MoEVARTrainer(object):
         stt = time.time()
         training = self.var_wo_ddp.training
         self.var_wo_ddp.eval()
-        for inp_B3HW, label_B in ld_val:
+        
+        for i, (inp_B3HW, label_B) in enumerate(ld_val):
             B, V = label_B.shape[0], self.vae_local.vocab_size
             inp_B3HW = inp_B3HW.to(dist.get_device(), non_blocking=True)
             label_B = label_B.to(dist.get_device(), non_blocking=True)
             
+            # 处理当前批次
             gt_idx_Bl: List[ITen] = self.vae_local.img_to_idxBl(inp_B3HW)
             gt_BL = torch.cat(gt_idx_Bl, dim=1)
             x_BLCv_wo_first_l: Ten = self.quantize_local.idxBl_to_var_input(gt_idx_Bl)
             
-            # Use forward method directly
+            # 使用前向方法直接获取输出和损失
             logits_BLV, _ = self.var_wo_ddp(label_B, x_BLCv_wo_first_l)
+            
+            # 计算指标
             L_mean += self.val_loss(logits_BLV.data.view(-1, V), gt_BL.view(-1)) * B
             L_tail += self.val_loss(logits_BLV.data[:, -self.last_l:].reshape(-1, V), gt_BL[:, -self.last_l:].reshape(-1)) * B
             acc_mean += (logits_BLV.data.argmax(dim=-1) == gt_BL).sum() * (100/gt_BL.shape[1])
             acc_tail += (logits_BLV.data[:, -self.last_l:].argmax(dim=-1) == gt_BL[:, -self.last_l:]).sum() * (100 / self.last_l)
             tot += B
+            
+            # 显式删除不再需要的张量并清理缓存
+            del gt_idx_Bl, gt_BL, x_BLCv_wo_first_l, logits_BLV
+            if (i + 1) % 200 == 0:  # 每10个批次清理一次缓存
+                torch.cuda.empty_cache()
+        
         self.var_wo_ddp.train(training)
         
         stats = L_mean.new_tensor([L_mean.item(), L_tail.item(), acc_mean.item(), acc_tail.item(), tot])
