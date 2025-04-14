@@ -18,13 +18,14 @@ ITen = torch.LongTensor
 BTen = torch.BoolTensor
 
 
-class MoEVARTrainer(object):
+class HLMoEVARTrainer(object):
     def __init__(
         self, device, patch_nums: Tuple[int, ...], resos: Tuple[int, ...],
         vae_local: VQVAE, var_wo_ddp: MoEVAR, var: DDP,
         var_opt: AmpOptimizer, label_smooth: float,
+        lyapunov_weight: float = 0.01, holder_weight: float = 0.01,
     ):
-        super(MoEVARTrainer, self).__init__()
+        super(HLMoEVARTrainer, self).__init__()
         
         self.var, self.vae_local, self.quantize_local = var, vae_local, vae_local.quantize
         self.quantize_local: VectorQuantizer2
@@ -52,12 +53,9 @@ class MoEVARTrainer(object):
         self.last_prog_si = -1
         self.first_prog = True
         
-        # MoE specific attributes
         self.aux_loss_weight = var_wo_ddp.aux_loss_weight
-        
-        # Hyperparameters for theoretical losses
-        self.lyapunov_weight = 0.01
-        self.holder_weight = 0.01
+        self.lyapunov_weight = lyapunov_weight
+        self.holder_weight = holder_weight
     
     @torch.no_grad()
     def evaluate(self, ld_val: DataLoader):
@@ -207,6 +205,42 @@ class MoEVARTrainer(object):
             # Add theoretical losses to total loss
             if len(scale_reps) > 1:
                 total_loss = total_loss + self.lyapunov_weight * lyapunov_loss + self.holder_weight * holder_loss
+            
+            # Add Jacobi loss
+            jacobi_loss = torch.tensor(0.0, device=logits_BLV.device)
+
+            if len(scale_reps) > 1:
+                eta = 1.0  # Maximum allowed expansion factor (<=1 enforces contraction)
+                epsilon = 1e-6  # Small constant for numerical stability
+                
+                for i in range(len(scale_reps) - 1):
+                    batch_size = scale_reps[i].shape[0]
+                    
+                    # Only calculate if batch_size > 1
+                    if batch_size > 1:
+                        # Compute pairwise distances at scale i
+                        z_i_expand = scale_reps[i].unsqueeze(1)  # [B, 1, D]
+                        z_i_transpose = scale_reps[i].unsqueeze(0)  # [1, B, D]
+                        dist_i = torch.norm(z_i_expand - z_i_transpose, dim=2)  # [B, B]
+                        
+                        # Compute pairwise distances at scale i+1
+                        z_i1_expand = scale_reps[i+1].unsqueeze(1)
+                        z_i1_transpose = scale_reps[i+1].unsqueeze(0)
+                        dist_i1 = torch.norm(z_i1_expand - z_i1_transpose, dim=2)
+                        
+                        # Compute expansion ratio (masked to exclude diagonal)
+                        mask = ~torch.eye(batch_size, dtype=torch.bool, device=dist_i.device)
+                        expansion_ratio = dist_i1[mask] / (dist_i[mask] + epsilon)
+                        
+                        # Penalize expansion beyond eta
+                        jacobi_term = torch.clamp(expansion_ratio - eta, min=0).mean()
+                        jacobi_loss += jacobi_term
+
+            # Add to total loss
+            if len(scale_reps) > 1:
+                total_loss = total_loss + self.lyapunov_weight * lyapunov_loss + \
+                             self.holder_weight * holder_loss + \
+                             self.lyapunov_weight * jacobi_loss  # Use lyapunov_weight for jacobi as well
         
         # Backward and optimization
         grad_norm, scale_log2 = self.var_opt.backward_clip_step(loss=total_loss, stepping=stepping)
@@ -235,6 +269,7 @@ class MoEVARTrainer(object):
             moe_loss_value = aux_loss.item() if aux_loss is not None else 0.0
             lyapunov_loss_value = lyapunov_loss.item()
             holder_loss_value = holder_loss.item()
+            jacobi_loss_value = jacobi_loss.item()
             
             metric_lg.update(
                 Lm=Lmean, Lt=Ltail, 
@@ -242,7 +277,8 @@ class MoEVARTrainer(object):
                 tnm=grad_norm_value, 
                 MoELoss=moe_loss_value,
                 LyapunovLoss=lyapunov_loss_value,
-                HolderLoss=holder_loss_value
+                HolderLoss=holder_loss_value,
+                JacobiLoss=jacobi_loss_value
             )
         
         # Log to tensorboard
@@ -264,6 +300,7 @@ class MoEVARTrainer(object):
                 # Add theoretical losses to tensorboard
                 kw['lyapunov_loss'] = lyapunov_loss.item()
                 kw['holder_loss'] = holder_loss.item()
+                kw['jacobi_loss'] = jacobi_loss.item()
                 
                 for si, (bg, ed) in enumerate(self.begin_ends):
                     if 0 <= prog_si < si: break
@@ -338,6 +375,6 @@ class MoEVARTrainer(object):
             # Check for config mismatches
             for k, v in self.get_config().items():
                 if config.get(k, None) != v:
-                    err = f'[MoEVAR.load_state_dict] config mismatch: this.{k}={v} (ckpt.{k}={config.get(k, None)})'
+                    err = f'[HLMoEVAR.load_state_dict] config mismatch: this.{k}={v} (ckpt.{k}={config.get(k, None)})'
                     if strict: raise AttributeError(err)
                     else: print(err)

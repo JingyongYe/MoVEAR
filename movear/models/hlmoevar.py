@@ -198,4 +198,70 @@ class HLMoEVAR(VAR):
         
         return logits, aux_loss
 
-    # Keep the same init_weights method as MoEVAR
+    def init_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_head=0.02, init_std=-1):
+        """Override weight initialization for HLMoEVAR variant"""
+        print(f"[init_weights] HLMoEVAR with init_std={init_std}")
+        
+        if init_std < 0:
+            std = math.sqrt(1.0 / self.C)
+            init_std = std
+        
+        # Initialize embeddings and common layers
+        nn.init.normal_(self.word_embed.weight, std=init_std)
+        nn.init.normal_(self.class_emb.weight, std=init_std)
+        nn.init.normal_(self.pos_1LC, std=init_std)
+        nn.init.normal_(self.pos_start, std=init_std)
+        
+        if hasattr(self, 'lvl_embed'):
+            nn.init.normal_(self.lvl_embed.weight, std=init_std)
+        
+        # Initialize transformer blocks
+        depth = len(self.blocks)
+        for i, sab in enumerate(self.blocks):
+            # Initialize attention weights
+            if hasattr(sab.attn, 'qkv'):
+                nn.init.normal_(sab.attn.qkv.weight, std=init_std)
+            elif hasattr(sab.attn, 'mat_qkv'):
+                nn.init.normal_(sab.attn.mat_qkv.weight, std=init_std)
+            
+            # Initialize projection layer
+            nn.init.normal_(sab.attn.proj.weight, std=init_std)
+            sab.attn.proj.weight.data.div_(math.sqrt(2 * depth))
+            
+            # Initialize MoE experts
+            if hasattr(sab.ffn, 'local_experts'):
+                for expert in sab.ffn.local_experts:
+                    # First linear layer
+                    nn.init.normal_(expert[0].weight, std=init_std)
+                    # Second linear layer
+                    nn.init.normal_(expert[3].weight, std=init_std)
+                    expert[3].weight.data.div_(math.sqrt(2 * depth))
+            
+            # Initialize router
+            if hasattr(sab.ffn, 'router'):
+                nn.init.normal_(sab.ffn.router.router.weight, std=init_std)
+                # Initialize scale embeddings if they exist
+                if hasattr(sab.ffn.router, 'scale_embeddings'):
+                    nn.init.normal_(sab.ffn.router.scale_embeddings, std=0.02)
+            
+            # Initialize adaptive layer norm parameters
+            if sab.shared_aln:
+                if hasattr(sab, 'ada_gss'):
+                    nn.init.normal_(sab.ada_gss, std=init_adaln_gamma)
+            else:
+                if hasattr(sab, 'ada_lin'):
+                    for module in sab.ada_lin:
+                        if isinstance(module, nn.Linear):
+                            nn.init.constant_(module.weight, init_adaln)
+                            nn.init.normal_(module.bias, std=init_adaln_gamma)
+            
+            # Initialize gamma parameters (if they exist)
+            if hasattr(sab, 'gamma1'):
+                nn.init.ones_(sab.gamma1)
+                nn.init.ones_(sab.gamma2)
+        
+        # Initialize head
+        nn.init.normal_(self.head.weight, std=init_head)
+        nn.init.zeros_(self.head.bias)
+        
+        return self

@@ -21,7 +21,7 @@ from movear.models.vqvae import VQVAE
 from movear.models.hlmoevar import HLMoEVAR
 from movear.models.hlmoebuild import build_vae_hl_moe_var, load_pretrained_for_hl_moe
 import movear.models.dist as dist
-from movear.models.moetrainer import MoEVARTrainer
+from movear.models.hlmoetrainer import HLMoEVARTrainer
 from tqdm import tqdm
 import signal
 
@@ -172,10 +172,12 @@ def build_everything(args: arg_util.Args):
     del names, paras, para_groups
     
     # Build MoE trainer
-    trainer = MoEVARTrainer(
+    trainer = HLMoEVARTrainer(
         device=args.device, patch_nums=args.patch_nums, resos=args.resos,
         vae_local=vae_local, var_wo_ddp=var_wo_ddp, var=var,
         var_opt=var_optim, label_smooth=args.ls,
+        lyapunov_weight=lyapunov_weight,
+        holder_weight=holder_weight,
     )
     
     # Load trainer state if available
@@ -219,7 +221,7 @@ def build_everything(args: arg_util.Args):
 
 def train_one_ep(ep: int, is_first_ep: bool, start_it: int, args: arg_util.Args, 
                  tb_lg: misc.TensorboardLogger, ld_or_itrt, iters_train: int, trainer):
-    trainer: MoEVARTrainer
+    trainer: HLMoEVARTrainer
     
     step_cnt = 0
     me = misc.MetricLogger(delimiter='  ')
@@ -283,7 +285,7 @@ def train_one_ep(ep: int, is_first_ep: bool, start_it: int, args: arg_util.Args,
         stepping = (g_it + 1) % args.ac == 0
         step_cnt += int(stepping)
         
-        # Train one step using MoEVARTrainer
+        # Train one step using HLMoEVARTrainer
         grad_norm, scale_log2 = trainer.train_step(
             it=it, g_it=g_it, stepping=stepping, metric_lg=me, tb_lg=tb_lg,
             inp_B3HW=inp, label_B=label, prog_si=prog_si, prog_wp_it=args.pgwp * iters_train,
