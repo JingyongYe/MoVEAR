@@ -87,6 +87,10 @@ class Args(Tap):
     aux_weight: float = 0.01   # Weight for auxiliary balancing loss
     pretrained_var: str = ''   # Path to pretrained VAR model for initialization
     
+    # Lyapunov and Hölder continuity parameters
+    lyapunov_weight: float = 0.01  # Weight for Lyapunov stability loss
+    holder_weight: float = 0.01    # Weight for Hölder continuity loss
+    
     # would be automatically set in runtime
     cmd: str = ' '.join(sys.argv[1:])  # [automatically set; don't specify this]
     branch: str = subprocess.check_output(f'git symbolic-ref --short HEAD 2>/dev/null || git rev-parse HEAD', shell=True).decode('utf-8').strip() or '[unknown]' # [automatically set; don't specify this]
