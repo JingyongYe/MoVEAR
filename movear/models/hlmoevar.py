@@ -8,7 +8,7 @@ import math
 from .var import VAR
 from .basic_var import AdaLNSelfAttn, FFN
 from .basic_var import AdaLNSelfAttn, FFN, SelfAttention
-from .hlrouter import ScaleAdaptiveMoEFFN, compute_scale_aware_balance_loss
+from .hlrouter import OptimizedMoEFFN, compute_scale_aware_balance_loss
 from .vqvae import VQVAE
 from movear.models.helpers import DropPath, drop_path
 import movear.models.dist as dist
@@ -21,7 +21,7 @@ class HLMoEAdaLNSelfAttn(nn.Module):
         self, cond_dim, shared_aln, block_idx, embed_dim, norm_layer, num_heads,
         mlp_ratio, drop, attn_drop, drop_path, last_drop_p, attn_l2_norm,
         flash_if_available, fused_if_available, num_experts, k, noise_std,
-        num_scales=10, scale_embed_dim=64,
+        num_scales=10,
         shared_ada_lin=None
     ):
         super().__init__()
@@ -36,13 +36,12 @@ class HLMoEAdaLNSelfAttn(nn.Module):
         )
         
         # Use Scale-Adaptive MoE FFN
-        self.ffn = ScaleAdaptiveMoEFFN(
+        self.ffn = OptimizedMoEFFN(
             embed_dim=embed_dim,
             mlp_ratio=mlp_ratio,
             num_experts=num_experts,
             k=k,
             num_scales=num_scales,
-            scale_embed_dim=scale_embed_dim,
             noise_std=noise_std,
             drop_rate=drop
         )

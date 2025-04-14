@@ -20,7 +20,6 @@ from movear.utils.lr_control import filter_params, lr_wd_annealing
 from movear.models.vqvae import VQVAE
 from movear.models.hlmoevar import HLMoEVAR
 from movear.models.hlmoebuild import build_vae_hl_moe_var, load_pretrained_for_hl_moe
-import movear.models.dist as dist
 from movear.models.hlmoetrainer import HLMoEVARTrainer
 from tqdm import tqdm
 import signal
@@ -93,7 +92,7 @@ def build_everything(args: arg_util.Args):
         iters_train = 10
     
     # Build MoE models
-    vae_local, var_wo_ddp, lyapunov_weight, holder_weight = build_vae_hl_moe_var(
+    vae_local, var_wo_ddp, theory_weight = build_vae_hl_moe_var(
         V=4096, Cvae=32, ch=160, share_quant_resi=4,  # Hard-coded VQVAE hyperparameters
         device=dist.get_device(), patch_nums=args.patch_nums,
         num_classes=num_classes, depth=args.depth, shared_aln=args.saln, attn_l2_norm=args.anorm,
@@ -101,8 +100,7 @@ def build_everything(args: arg_util.Args):
         init_adaln=args.aln, init_adaln_gamma=args.alng, init_head=args.hd, init_std=args.ini,
         num_experts=args.num_experts, k=args.k, noise_std=args.noise_std, 
         aux_loss_weight=args.aux_weight,
-        lyapunov_weight=args.lyapunov_weight,
-        holder_weight=args.holder_weight
+        theory_weight=args.theory_weight
     )
     
     # Load VAE checkpoint
@@ -176,8 +174,7 @@ def build_everything(args: arg_util.Args):
         device=args.device, patch_nums=args.patch_nums, resos=args.resos,
         vae_local=vae_local, var_wo_ddp=var_wo_ddp, var=var,
         var_opt=var_optim, label_smooth=args.ls,
-        lyapunov_weight=lyapunov_weight,
-        holder_weight=holder_weight,
+        theory_weight=theory_weight,
     )
     
     # Load trainer state if available

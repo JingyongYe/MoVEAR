@@ -19,7 +19,7 @@ except ImportError as e:
     time.sleep(5)
     raise e
 
-import dist
+import movear.models.dist as dist
 
 
 class Args(Tap):
@@ -87,9 +87,7 @@ class Args(Tap):
     aux_weight: float = 0.01   # Weight for auxiliary balancing loss
     pretrained_var: str = ''   # Path to pretrained VAR model for initialization
     
-    # Lyapunov and Hölder continuity parameters
-    lyapunov_weight: float = 0.01  # Weight for Lyapunov stability loss
-    holder_weight: float = 0.01    # Weight for Hölder continuity loss
+    theory_weight: float = 0.01  # Consolidated weight for theoretical constraints
     
     # would be automatically set in runtime
     cmd: str = ' '.join(sys.argv[1:])  # [automatically set; don't specify this]

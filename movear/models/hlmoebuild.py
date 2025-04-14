@@ -11,7 +11,7 @@ def build_vae_hl_moe_var(
     flash_if_available=True, fused_if_available=True,
     init_adaln=0.5, init_adaln_gamma=1e-5, init_head=0.02, init_std=-1,
     num_experts=4, k=2, noise_std=0.1, aux_loss_weight=0.01,
-    lyapunov_weight=0.01, holder_weight=0.01
+    theory_weight=0.01  # Consolidated parameter
 ):
     """Build VAE and enhanced HLMoEVAR models with scale-adaptive expert routing"""
     world_size = dist.get_world_size()
@@ -22,7 +22,7 @@ def build_vae_hl_moe_var(
         num_experts = num_experts + (world_size - num_experts % world_size)
     
     print(f"[HLMoE] Building VAR with {num_experts} experts (distributed across {world_size} GPUs), top-{k}, noise={noise_std}, aux_weight={aux_loss_weight}")
-    print(f"[HLMoE] Theoretical constraints: Lyapunov weight={lyapunov_weight}, Hölder weight={holder_weight}")
+    print(f"[HLMoE] Theoretical constraints weight: {theory_weight}")
     
     # Build VQVAE (same as original)
     vae_local = VQVAE(
@@ -54,7 +54,7 @@ def build_vae_hl_moe_var(
         vae_local = vae_local.to(device)
         var_wo_ddp = var_wo_ddp.to(device)
     
-    return vae_local, var_wo_ddp, lyapunov_weight, holder_weight
+    return vae_local, var_wo_ddp, theory_weight
 
 
 def load_pretrained_for_hl_moe(var_wo_ddp, pretrained_path, device='cpu', strict=False):

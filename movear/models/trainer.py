@@ -77,7 +77,7 @@ class VARTrainer(object):
         self.var_wo_ddp.train(training)
         
         stats = L_mean.new_tensor([L_mean.item(), L_tail.item(), acc_mean.item(), acc_tail.item(), tot])
-        dist.allreduce(stats)
+        stats = dist.allreduce(stats)
         tot = round(stats[-1].item())
         stats /= tot
         L_mean, L_tail, acc_mean, acc_tail, _ = stats.tolist()
@@ -138,7 +138,7 @@ class VARTrainer(object):
         # log to tensorboard
         if g_it == 0 or (g_it + 1) % 500 == 0:
             prob_per_class_is_chosen = pred_BL.view(-1).bincount(minlength=V).float()
-            dist.allreduce(prob_per_class_is_chosen)
+            prob_per_class_is_chosen = dist.allreduce(prob_per_class_is_chosen)
             prob_per_class_is_chosen /= prob_per_class_is_chosen.sum()
             cluster_usage = (prob_per_class_is_chosen > 0.001 / V).float().mean().item() * 100
             if dist.is_master():

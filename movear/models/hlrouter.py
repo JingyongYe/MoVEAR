@@ -5,23 +5,22 @@ from typing import Dict, Tuple, List, Optional
 import movear.models.dist as dist
 
 
-class ScaleAdaptiveRouter(nn.Module):
-    """Enhanced router with scale awareness for cross-scale continuity and stability."""
+class OptimizedScaleAdaptiveRouter(nn.Module):
+    """Simplified router with minimal scale awareness for speed and efficiency."""
     
     def __init__(self, input_dim: int, num_experts: int, k: int, 
-                 num_scales: int = 10, scale_embed_dim: int = 64,
-                 noise_std: float = 0.1):
+                 num_scales: int = 10, noise_std: float = 0.1):
         super().__init__()
         self.input_dim = input_dim
         self.num_experts = num_experts
         self.k = k
         self.noise_std = noise_std
         
-        # Scale embeddings - one for each scale in the hierarchy
-        self.scale_embeddings = nn.Parameter(torch.randn(num_scales, scale_embed_dim))
+        # Single scale conditioning matrix instead of embeddings
+        self.scale_condition = nn.Parameter(torch.randn(num_scales, 1, 1))
         
-        # Router with concatenated input (feature + scale embedding)
-        self.router = nn.Linear(input_dim + scale_embed_dim, num_experts, bias=False)
+        # Simpler router - direct mapping without concatenation
+        self.router = nn.Linear(input_dim, num_experts, bias=False)
         
         # For expert parallelism
         self.world_size = dist.get_world_size()
@@ -33,56 +32,44 @@ class ScaleAdaptiveRouter(nn.Module):
             raise ValueError(f"Number of experts ({num_experts}) must be divisible by world_size ({self.world_size})")
     
     def forward(self, x: torch.Tensor, scale_idx: int = None, training: bool = True) -> Tuple[torch.Tensor, Dict]:
-        """Route input to top-k experts with expert parallelism and scale awareness"""
+        """Optimized routing with minimal overhead"""
         batch_size, seq_len, hidden_dim = x.shape
         
-        # Get scale embedding if provided
+        # Apply scale conditioning as a simple multiplicative factor
         if scale_idx is not None:
-            scale_emb = self.scale_embeddings[scale_idx].unsqueeze(0).unsqueeze(0)
-            scale_emb = scale_emb.expand(batch_size, seq_len, -1)
-            # Concatenate with input
-            x_with_scale = torch.cat([x, scale_emb], dim=-1)
+            # Simple scale conditioning by multiplication - much faster than concatenation
+            scale_factor = self.scale_condition[scale_idx]
+            router_input = x * (1.0 + scale_factor * 0.1)
         else:
-            # Use average of scale embeddings if no specific scale is provided
-            scale_emb = self.scale_embeddings.mean(dim=0).unsqueeze(0).unsqueeze(0)
-            scale_emb = scale_emb.expand(batch_size, seq_len, -1)
-            x_with_scale = torch.cat([x, scale_emb], dim=-1)
+            router_input = x
         
-        # Get router logits for all experts
-        router_logits = self.router(x_with_scale)  # [batch_size, seq_len, num_experts]
+        # Get router logits directly
+        router_logits = self.router(router_input)
         
         # Apply noise during training for better expert utilization
         if training and self.noise_std > 0:
-            noise = torch.randn_like(router_logits) * self.noise_std
-            router_logits = router_logits + noise
+            router_logits = router_logits + torch.randn_like(router_logits) * self.noise_std
         
-        # Get routing probabilities
+        # Get routing probabilities and top-k selection (same as original)
         routing_probs = F.softmax(router_logits, dim=-1)
-        
-        # Select top-k experts
         routing_weights, selected_experts = torch.topk(routing_probs, self.k, dim=-1)
-        
-        # Normalize the routing weights
         routing_weights = routing_weights / routing_weights.sum(dim=-1, keepdim=True)
         
-        # Create dispatch tensor (one-hot encoding for selected experts with weights)
-        # We still create the full dispatch tensor for auxiliary loss computation
+        # Create dispatch tensor more efficiently
         dispatch_tensor = torch.zeros_like(routing_probs)
         dispatch_tensor.scatter_(-1, selected_experts, routing_weights)
         
-        # Store data for auxiliary loss calculation
+        # Store minimal data for loss calculation
         aux_data = {
             "routing_probs": routing_probs,
-            "selected_experts": selected_experts,
-            "routing_weights": routing_weights,
-            "scale_idx": scale_idx
+            "selected_experts": selected_experts
         }
         
         return dispatch_tensor, aux_data
 
 
-class ScaleAdaptiveMoEFFN(nn.Module):
-    """MoE Feed Forward Network layer with scale-adaptive routing."""
+class OptimizedMoEFFN(nn.Module):
+    """Streamlined MoE FFN layer with minimal scale awareness"""
     
     def __init__(self, 
                  embed_dim: int, 
@@ -90,7 +77,6 @@ class ScaleAdaptiveMoEFFN(nn.Module):
                  num_experts: int, 
                  k: int,
                  num_scales: int = 10,
-                 scale_embed_dim: int = 64,
                  noise_std: float = 0.1,
                  drop_rate: float = 0.0):
         super().__init__()
@@ -100,29 +86,25 @@ class ScaleAdaptiveMoEFFN(nn.Module):
         self.k = k
         self.hidden_dim = int(embed_dim * mlp_ratio)
         
-        # Setup parallel expert configuration
+        # Expert parallelism setup
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
         self.experts_per_rank = num_experts // self.world_size
         
-        # Handle case where num_experts is not divisible by world_size
-        if num_experts % self.world_size != 0:
-            raise ValueError(f"Number of experts ({num_experts}) must be divisible by world_size ({self.world_size})")
-        
-        # Create scale-adaptive router
-        self.router = ScaleAdaptiveRouter(
+        # Create optimized router
+        self.router = OptimizedScaleAdaptiveRouter(
             input_dim=embed_dim,
             num_experts=num_experts,
             k=k,
             num_scales=num_scales,
-            scale_embed_dim=scale_embed_dim,
             noise_std=noise_std
         )
         
-        # Create only the local experts for this rank
+        # Create local experts
         start_idx = self.rank * self.experts_per_rank
         end_idx = start_idx + self.experts_per_rank
         
+        # Optimize expert implementation for speed
         self.local_experts = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(embed_dim, self.hidden_dim),
@@ -130,41 +112,34 @@ class ScaleAdaptiveMoEFFN(nn.Module):
                 nn.Dropout(drop_rate),
                 nn.Linear(self.hidden_dim, embed_dim),
                 nn.Dropout(drop_rate)
-            ) for _ in range(start_idx, end_idx)
+            ) for _ in range(self.experts_per_rank)
         ])
     
     def forward(self, x: torch.Tensor, scale_idx: int = None) -> Tuple[torch.Tensor, Dict]:
-        """Forward pass through distributed MoE layer with scale awareness"""
+        """Optimized forward pass for memory efficiency"""
         batch_size, seq_len, hidden_dim = x.shape
         
-        # Get global routing probabilities with scale awareness
+        # Get routing information
         dispatch_tensor, aux_data = self.router(x, scale_idx=scale_idx, training=self.training)
         
-        # Extract the dispatch weights only for local experts
+        # Process only local experts
         start_idx = self.rank * self.experts_per_rank
-        end_idx = start_idx + self.experts_per_rank
-        local_dispatch = dispatch_tensor[:, :, start_idx:end_idx]
+        local_dispatch = dispatch_tensor[:, :, start_idx:start_idx + self.experts_per_rank]
         
-        # Process tokens with local experts
+        # Pre-allocate output tensor
         expert_outputs = torch.zeros(batch_size, seq_len, self.embed_dim, device=x.device)
         
-        # For each local expert, process its tokens
+        # Process tokens with local experts
         for local_idx, expert in enumerate(self.local_experts):
-            # Global expert index
-            expert_idx = start_idx + local_idx
-            
-            # Get expert weights for this expert
-            expert_weights = local_dispatch[:, :, local_idx].unsqueeze(-1)
-            
             # Skip computation if no tokens are routed to this expert
+            expert_weights = local_dispatch[:, :, local_idx].unsqueeze(-1)
             if expert_weights.max() == 0:
                 continue
                 
-            # Apply expert to input and weight the output
-            expert_output = expert(x)
-            expert_outputs += expert_output * expert_weights
+            # Apply expert and accumulate weighted output
+            expert_outputs += expert(x) * expert_weights
         
-        # All-reduce to combine outputs from all experts across devices
+        # All-reduce to combine outputs
         dist.allreduce(expert_outputs)
         
         return expert_outputs, aux_data
