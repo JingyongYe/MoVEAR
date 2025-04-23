@@ -18,12 +18,11 @@ ITen = torch.LongTensor
 BTen = torch.BoolTensor
 
 
-class HLMoEVARTrainer(object):
+class MoEVARTrainer(object):
     def __init__(
         self, device, patch_nums: Tuple[int, ...], resos: Tuple[int, ...],
         vae_local: VQVAE, var_wo_ddp: MoEVAR, var: DDP,
         var_opt: AmpOptimizer, label_smooth: float,
-        lyapunov_weight: float = 0.01, holder_weight: float = 0.01,
     ):
         super(MoEVARTrainer, self).__init__()
         
@@ -44,7 +43,7 @@ class HLMoEVARTrainer(object):
         
         self.patch_nums, self.resos = patch_nums, resos
         self.begin_ends = []
-        cur = 0                                 
+        cur = 0
         for i, pn in enumerate(patch_nums):
             self.begin_ends.append((cur, cur + pn * pn))
             cur += pn*pn
@@ -55,8 +54,6 @@ class HLMoEVARTrainer(object):
         
         # MoE specific attributes
         self.aux_loss_weight = var_wo_ddp.aux_loss_weight
-        self.lyapunov_weight = lyapunov_weight
-        self.holder_weight = holder_weight
     
     @torch.no_grad()
     def evaluate(self, ld_val: DataLoader):
@@ -94,7 +91,7 @@ class HLMoEVARTrainer(object):
             
             # 显式删除不再需要的张量并清理缓存
             del gt_idx_Bl, gt_BL, x_BLCv_wo_first_l, logits_BLV
-            if (i + 1) % 200 == 0:  # 每10个批次清理一次缓存
+            if (i + 1) % 200 == 0:  # 每200个批次清理一次缓存
                 torch.cuda.empty_cache()
         
         self.var_wo_ddp.train(training)

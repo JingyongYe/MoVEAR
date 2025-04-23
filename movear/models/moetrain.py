@@ -20,6 +20,7 @@ from movear.utils.lr_control import filter_params, lr_wd_annealing
 from movear.models.vqvae import VQVAE
 from movear.models.moevar import MoEVAR
 from movear.models.moebuild import build_vae_moe_var, load_pretrained_for_moe
+import movear.models.dist as dist
 from movear.models.moetrainer import MoEVARTrainer
 from tqdm import tqdm
 import signal
