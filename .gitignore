@@ -22,3 +22,5 @@ local_output*
 /datasets/
 */local_output/
 */hl_local_output/
+*/d16_local_output/
+*/d16_imagenet_256_hl/
